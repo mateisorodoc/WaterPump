@@ -2,14 +2,18 @@
 const int pumpRelayPin = 2;         // Relay connected to pump (active low)
 const int soilMoisturePin = A0;     // Capacitive soil moisture sensor
 const int waterLevelPin = A1;       // Water level sensor (analog)
+const int flowMeterPin = 3;         // Flowmeter signal pin
 
 // Set thresholds
 const int soilMoistureThreshold = 350;  // Adjust this value based on calibration
-const int waterLevelThreshold = 730;    // Adjust this value based on calibration
+const int waterLevelThreshold = 720;    // Adjust this value based on calibration
 const float waterVolumeTarget = 50.0;   // Target water volume in ml (for one watering cycle)
 
+// Flowmeter variables
+volatile int flowPulseCount = 0;
+const float calibrationFactor = 5000; // Calibration factor (pulses per liter)
+
 // Variables
-float flowRate = 1; // Fixed flow rate in L/min (change this to match your pump's flow rate)
 float totalVolume = 0.0; // Total volume delivered (ml)
 unsigned long lastWateringTime = 0; // Last time the soil moisture was checked
 const unsigned long wateringInterval = 10000; // 10 seconds in milliseconds (change as needed)
@@ -19,12 +23,20 @@ unsigned long lastSensorReadTime = 0; // Last time the sensors were read
 // Variables for hysteresis
 const int soilMoistureHysteresis = 50;  // Hysteresis value to avoid rapid switching
 
+void flowPulseCounter() {
+    flowPulseCount++;
+}
+
 void setup() {
     // Initialize serial communication
     Serial.begin(9600);
 
     // Configure pins
     pinMode(pumpRelayPin, OUTPUT);
+    pinMode(flowMeterPin, INPUT_PULLUP);
+
+    // Attach interrupt for the flowmeter
+    attachInterrupt(digitalPinToInterrupt(flowMeterPin), flowPulseCounter, RISING);
 
     // Ensure pump is off initially (relay inactive)
     digitalWrite(pumpRelayPin, HIGH);
@@ -84,21 +96,36 @@ void loop() {
 
         // If soil moisture is above the threshold (dry) and water is available, start pump
         if (soilMoistureValue > soilMoistureThreshold && waterAvailable) {
+            flowPulseCount = 0; // Reset flowmeter pulse count
+            totalVolume = 0.0; // Reset total volume for this cycle
             digitalWrite(pumpRelayPin, LOW); // Turn on pump (active low)
             Serial.println("Pump ON");
 
-            // Calculate time to pump the required volume based on flow rate
-            unsigned long pumpDuration = (waterVolumeTarget / (flowRate * 1000)) * 60000; // Convert to ms
+            while (totalVolume < waterVolumeTarget) {
+                // Calculate volume based on flowmeter pulses
+                float flowRate = (flowPulseCount / calibrationFactor) * 1000; // Flow rate in ml/min
+                unsigned long pumpingDuration = millis();
 
-            // Wait for the required time to pump the target volume
-            delay(pumpDuration);
+                // Update the total volume delivered
+                totalVolume = (flowPulseCount / calibrationFactor) * 1000; // Convert to ml
+
+                // Display live flow update
+                Serial.println("--- Flow Update ---");
+                Serial.print("Flow Rate: ");
+                Serial.print(flowRate);
+                Serial.println(" ml/min");
+                Serial.print("Total Volume: ");
+                Serial.print(totalVolume);
+                Serial.println(" ml");
+                Serial.println("-------------------");
+
+                // Ensure the pump stops once the target volume is reached
+                if (totalVolume >= waterVolumeTarget) break;
+            }
 
             // Stop the pump after the target volume is dispensed
             digitalWrite(pumpRelayPin, HIGH); // Turn off pump (active low)
             Serial.println("Pump OFF");
-
-            // Record the total volume delivered
-            totalVolume = waterVolumeTarget;
 
             // Record the time of this watering cycle
             lastWateringTime = millis();
